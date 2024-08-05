@@ -1,13 +1,18 @@
 package dev.dfonline.codeclient.action.impl;
 
+import com.google.gson.JsonParser;
 import dev.dfonline.codeclient.Callback;
 import dev.dfonline.codeclient.CodeClient;
 import dev.dfonline.codeclient.Utility;
 import dev.dfonline.codeclient.action.Action;
+import dev.dfonline.codeclient.hypercube.template.Template;
+import dev.dfonline.codeclient.hypercube.template.TemplateBlock;
 import dev.dfonline.codeclient.location.Dev;
 import dev.dfonline.codeclient.mixin.entity.player.ClientPlayerInteractionManagerAccessor;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.entity.SignText;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NbtCompound;
 import net.minecraft.network.packet.Packet;
 import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
@@ -19,10 +24,14 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import org.apache.commons.lang3.ObjectUtils;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
 
 public class PlaceTemplates extends Action {
     private final ArrayList<Operation> operations;
@@ -60,6 +69,103 @@ public class PlaceTemplates extends Action {
     }
 
     /**
+     * Doesn't add .swap(), that needs to be added yourself.
+     * Will return <b>null</b> if there is no space.
+     */
+    public static @Nullable PlaceTemplates createSwapper(List<ItemStack> templates, Callback callback) {
+        if (CodeClient.location instanceof Dev dev) {
+            HashMap<BlockPos, ItemStack> map = new HashMap<>();
+            var scan = dev.scanForSigns(Pattern.compile(".*"));
+            ArrayList<ItemStack> leftOvers = new ArrayList<>(templates);
+            for (ItemStack item : templates) {
+                if (!item.hasNbt()) continue;
+                NbtCompound nbt = item.getNbt();
+                if (nbt == null) continue;
+                if (!nbt.contains("PublicBukkitValues")) continue;
+                NbtCompound publicBukkit = nbt.getCompound("PublicBukkitValues");
+                if (!publicBukkit.contains("hypercube:codetemplatedata")) continue;
+                String codeTemplateData = publicBukkit.getString("hypercube:codetemplatedata");
+                try {
+                    Template template = Template.parse64(JsonParser.parseString(codeTemplateData).getAsJsonObject().get("code").getAsString());
+                    if (template == null || template.blocks.isEmpty()) continue;
+                    TemplateBlock block = template.blocks.get(0);
+                    if (block.block == null) continue;
+                    TemplateBlock.Block blockName = TemplateBlock.Block.valueOf(block.block.toUpperCase());
+                    String name = ObjectUtils.firstNonNull(block.action, block.data);
+                    for (Map.Entry<BlockPos, SignText> sign : scan.entrySet()) { // Loop through scanned signs
+                        SignText text = sign.getValue();                        // ↓ If the blockName and name match
+                        if (text.getMessage(0, false).getString().equals(blockName.name) && text.getMessage(1, false).getString().equals(name)) {
+                            map.put(sign.getKey().east(), item);                // Put it into map
+                            leftOvers.remove(item);                             // Remove the template, so we can see if there's anything left over
+                            break;                                              // break out :D
+                        }
+                    }
+                } catch (Exception e) {
+                    CodeClient.LOGGER.warn(e.getMessage());
+                }
+            }
+            if (!leftOvers.isEmpty()) {
+                BlockPos freePos = dev.findFreePlacePos();
+                for (var item : leftOvers) {
+                    if(freePos == null) return null;
+                    map.put(freePos, item);
+                    freePos = dev.findFreePlacePos(freePos.west(2));
+                }
+            }
+            return new PlaceTemplates(map, callback);
+        }
+        return null;
+    }
+
+    /**
+     * A regular placer will always start from where code starts.
+     * This will use any free spaces instead.
+     * Will return <b>null</b> if there is no space.
+     */
+    public static PlaceTemplates createPlacer(List<ItemStack> templates, Callback callback) {
+        return createPlacer(templates, callback, false);
+    }
+
+    /**
+     * A regular placer will always start from where code starts.
+     * This will use any free spaces instead.
+     * Will return <b>null</b> if there is no space or some other error occurs.
+     */
+    public static PlaceTemplates createPlacer(List<ItemStack> templates, Callback callback, boolean compacter) {
+        if (CodeClient.location instanceof Dev dev) {
+            var map = new HashMap<BlockPos, ItemStack>();
+            if (!compacter) {
+                BlockPos lastPos = dev.findFreePlacePos();
+                for (var template : templates) {
+                    if(lastPos == null) return null;
+                    map.put(lastPos, template);
+                    lastPos = dev.findFreePlacePos(lastPos.west(2));
+                }
+            } else {
+                BlockPos nextPos = dev.findFreePlacePos();
+                for (var template : templates) {
+                    Template parsed = Template.parse64(Utility.templateDataItem(template));
+                    if(parsed == null) return null;
+                    int size = parsed.getLength();
+                    var placePos = nextPos;
+                    if(placePos == null) return null;
+                    var templateEndPos = placePos.south(size);
+                    if (dev.isInDev(templateEndPos)) {
+                        nextPos = templateEndPos;
+                    } else {
+                        placePos = dev.findFreePlacePos(placePos.west(2));
+                        if(placePos == null) return null;
+                        nextPos = placePos.south(size);
+                    }
+                    map.put(placePos, template);
+                }
+            }
+            return new PlaceTemplates(map, callback);
+        }
+        return null;
+    }
+
+    /**
      * If there is a template in the way, replace it.
      */
     public PlaceTemplates swap() {
@@ -70,6 +176,7 @@ public class PlaceTemplates extends Action {
     @Override
     public void init() {
         cooldown = 4;
+        assert CodeClient.MC.player != null;
         recoverMainHand = CodeClient.MC.player.getMainHandStack();
     }
 
@@ -101,7 +208,8 @@ public class PlaceTemplates extends Action {
 
     @Override
     public void tick() {
-        if (CodeClient.MC.interactionManager == null) return;
+        var net = CodeClient.MC.getNetworkHandler();
+        if (CodeClient.MC.interactionManager == null || CodeClient.MC.player == null || net == null) return;
         if (CodeClient.location instanceof Dev) {
             if (operations.isEmpty()) {
                 callback();
@@ -120,7 +228,6 @@ public class PlaceTemplates extends Action {
                         if (operation instanceof TemplateToPlace template) {
                             if (shouldBeSwapping) {
                                 var player = CodeClient.MC.player;
-                                var net = CodeClient.MC.getNetworkHandler();
                                 boolean sneaky = !player.isSneaking();
                                 if (sneaky)
                                     net.sendPacket(new ClientCommandC2SPacket(player, ClientCommandC2SPacket.Mode.PRESS_SHIFT_KEY));
@@ -150,7 +257,6 @@ public class PlaceTemplates extends Action {
                 goTo.init();
                 cooldown = 2;
             }
-            return;
         }
     }
 

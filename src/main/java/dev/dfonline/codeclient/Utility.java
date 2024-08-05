@@ -4,11 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.dfonline.codeclient.action.impl.GetActionDump;
-import dev.dfonline.codeclient.action.impl.PlaceTemplates;
 import dev.dfonline.codeclient.hypercube.template.Template;
-import dev.dfonline.codeclient.hypercube.template.TemplateBlock;
-import dev.dfonline.codeclient.location.Dev;
-import net.minecraft.block.entity.SignText;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
@@ -25,8 +21,6 @@ import net.minecraft.text.Text;
 import net.minecraft.text.TextColor;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.Identifier;
-import net.minecraft.util.math.BlockPos;
-import org.apache.commons.lang3.ObjectUtils;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.ByteArrayOutputStream;
@@ -50,6 +44,7 @@ public class Utility {
      * Be lazy, send your whole inventory!
      */
     public static void sendInventory() {
+        if(CodeClient.MC.getNetworkHandler() == null || CodeClient.MC.player == null) return;
         for (int i = 0; i <= 35; i++) {
             CodeClient.MC.getNetworkHandler().sendPacket(new CreativeInventoryActionC2SPacket(getRemoteSlot(i), CodeClient.MC.player.getInventory().getStack(i)));
         }
@@ -61,18 +56,20 @@ public class Utility {
      * @param item Any item
      */
     public static void makeHolding(ItemStack item) {
+        if(CodeClient.MC.player == null) return;
         PlayerInventory inv = CodeClient.MC.player.getInventory();
         Utility.sendHandItem(item);
         inv.selectedSlot = 0;
         inv.setStack(0, item);
     }
 
+    @SuppressWarnings("unused")
     public static void debug(Object object) {
         debug(Objects.toString(object));
     }
 
     public static void debug(String message) {
-        CodeClient.LOGGER.info("%%% DEBUG: " + message);
+        CodeClient.LOGGER.info("%%% DEBUG: {}", message);
     }
 
     /**
@@ -107,103 +104,16 @@ public class Utility {
         return Template.parse64(codeTemplateData);
     }
 
-    /**
-     * Doesn't add .swap(), that needs to be added yourself.
-     */
-    public static PlaceTemplates createSwapper(List<ItemStack> templates, Callback callback) {
-        if (CodeClient.location instanceof Dev dev) {
-            HashMap<BlockPos, ItemStack> map = new HashMap<>();
-            var scan = dev.scanForSigns(Pattern.compile(".*"));
-            ArrayList<ItemStack> leftOvers = new ArrayList<>(templates);
-            for (ItemStack item : templates) {
-                if (!item.hasNbt()) continue;
-                NbtCompound nbt = item.getNbt();
-                if (nbt == null) continue;
-                if (!nbt.contains("PublicBukkitValues")) continue;
-                NbtCompound publicBukkit = nbt.getCompound("PublicBukkitValues");
-                if (!publicBukkit.contains("hypercube:codetemplatedata")) continue;
-                String codeTemplateData = publicBukkit.getString("hypercube:codetemplatedata");
-                try {
-                    Template template = Template.parse64(JsonParser.parseString(codeTemplateData).getAsJsonObject().get("code").getAsString());
-                    if (template.blocks.isEmpty()) continue;
-                    TemplateBlock block = template.blocks.get(0);
-                    if (block.block == null) continue;
-                    TemplateBlock.Block blockName = TemplateBlock.Block.valueOf(block.block.toUpperCase());
-                    String name = ObjectUtils.firstNonNull(block.action, block.data);
-                    for (Map.Entry<BlockPos, SignText> sign : scan.entrySet()) { // Loop through scanned signs
-                        SignText text = sign.getValue();                        // ↓ If the blockName and name match
-                        if (text.getMessage(0, false).getString().equals(blockName.name) && text.getMessage(1, false).getString().equals(name)) {
-                            map.put(sign.getKey().east(), item);                // Put it into map
-                            leftOvers.remove(item);                             // Remove the template, so we can see if there's anything left over
-                            break;                                              // break out :D
-                        }
-                    }
-                } catch (Exception e) {
-                    CodeClient.LOGGER.warn(e.getMessage());
-                }
-            }
-            if (!leftOvers.isEmpty()) {
-                BlockPos freePos = dev.findFreePlacePos();
-                for (var item : leftOvers) {
-                    map.put(freePos, item);
-                    freePos = dev.findFreePlacePos(freePos.west(2));
-                }
-            }
-            return new PlaceTemplates(map, callback);
-        }
-        return null;
-    }
-
-    /**
-     * A regular placer will always start from where code starts.
-     * This will use any free spaces instead.
-     */
-    public static PlaceTemplates createPlacer(List<ItemStack> templates, Callback callback) {
-        return createPlacer(templates, callback, false);
-    }
-
-    /**
-     * A regular placer will always start from where code starts.
-     * This will use any free spaces instead.
-     */
-    public static PlaceTemplates createPlacer(List<ItemStack> templates, Callback callback, boolean compacter) {
-        if (CodeClient.location instanceof Dev dev) {
-            var map = new HashMap<BlockPos, ItemStack>();
-            if (!compacter) {
-                BlockPos lastPos = dev.findFreePlacePos();
-                for (var template : templates) {
-                    map.put(lastPos, template);
-                    lastPos = dev.findFreePlacePos(lastPos.west(2));
-                }
-            } else {
-                BlockPos nextPos = dev.findFreePlacePos();
-                for (var template : templates) {
-                    int size = Template.parse64(Utility.templateDataItem(template)).getLength();
-                    var placePos = nextPos;
-                    var templateEndPos = placePos.south(size);
-                    if (dev.isInDev(templateEndPos)) {
-                        nextPos = templateEndPos;
-                    } else {
-                        placePos = dev.findFreePlacePos(placePos.west(2));
-                        nextPos = placePos.south(size);
-                    }
-                    map.put(placePos, template);
-                }
-            }
-            return new PlaceTemplates(map, callback);
-        }
-        return null;
-    }
-
     public static void addLore(ItemStack stack, Text... lore) {
-        var display = stack.getSubNbt("display");
+        var display = Objects.requireNonNullElse(stack.getSubNbt("display"), new NbtCompound());
         var loreList = new NbtList();
-        for (Text line : lore) loreList.add(Utility.nbtify(Text.empty().append(line)));
+        for (Text line : lore) loreList.add(Utility.textToNBT(Text.empty().append(line)));
         display.put("Lore", loreList);
         stack.setSubNbt("display", display);
     }
 
     public static void sendHandItem(ItemStack item) {
+        if(CodeClient.MC.getNetworkHandler() == null || CodeClient.MC.player == null) return;
         CodeClient.MC.getNetworkHandler().sendPacket(new CreativeInventoryActionC2SPacket(36 + CodeClient.MC.player.getInventory().selectedSlot, item));
     }
 
@@ -211,13 +121,14 @@ public class Utility {
      * Gets all templates in the players inventory.
      */
     public static List<ItemStack> templatesInInventory() {
+        if(CodeClient.MC.player == null) return null;
         PlayerInventory inv = CodeClient.MC.player.getInventory();
         ArrayList<ItemStack> templates = new ArrayList<>();
         for (int i = 0; i < (27 + 9); i++) {
             ItemStack item = inv.getStack(i);
             if (!item.hasNbt()) continue;
             NbtCompound nbt = item.getNbt();
-            if (!nbt.contains("PublicBukkitValues")) continue;
+            if (nbt == null || !nbt.contains("PublicBukkitValues")) continue;
             NbtCompound publicBukkit = nbt.getCompound("PublicBukkitValues");
             if (!publicBukkit.contains("hypercube:codetemplatedata")) continue;
             templates.add(item);
@@ -251,14 +162,6 @@ public class Utility {
         sendMessage(Text.literal(message), type);
     }
 
-    /**
-     * @deprecated This uses literals, use translations when you can.
-     */
-    @Deprecated
-    public static void sendMessage(String message) {
-        sendMessage(Text.literal(message), ChatType.INFO);
-    }
-
     public static void sendMessage(Text message) {
         sendMessage(message, ChatType.INFO);
     }
@@ -284,7 +187,7 @@ public class Utility {
      *
      * @return Usable in lore and as a name in nbt.
      */
-    public static NbtString nbtify(Text text) {
+    public static NbtString textToNBT(Text text) {
         JsonElement json = Text.Serialization.toJsonTree(text);
         if (json.isJsonObject()) {
             JsonObject obj = (JsonObject) json;

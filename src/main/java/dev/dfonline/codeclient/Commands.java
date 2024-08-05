@@ -26,6 +26,7 @@ import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.math.BlockPos;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.SystemUtils;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
@@ -342,12 +343,12 @@ public class Commands {
                                         var template = Template.parse64(data);
                                         if (template == null) continue;
                                         var first = template.blocks.get(0);
-                                        String name = Objects.requireNonNullElse(first.action != null ? first.action : first.data, "unknown");
+                                        String name = Objects.requireNonNullElse(first.action != null ? first.action : first.data, "unknown").replaceAll(SystemUtils.IS_OS_WINDOWS ? "[<>:\"/|?*]" : "/", "");
                                         var filePath = finalCurrentPath.resolve(name + ".dft");
                                         try {
                                             Files.write(filePath, Base64.getDecoder().decode(data));
                                         } catch (Exception ignored) {
-                                            Utility.sendMessage(Text.translatable("codeclient.files.error.write_file", filePath), ChatType.FAIL);
+                                            Utility.sendMessage(Text.translatable("codeclient.files.error.write_file", filePath.toString()), ChatType.FAIL);
                                         }
                                     }
 
@@ -366,7 +367,7 @@ public class Commands {
                 var scan = dev.scanForSigns(pattern);
                 Utility.sendMessage(Text.translatable("codeclient.action.scanfor.scan_result"));
                 for (var res : scan.entrySet()) {
-                    Utility.sendMessage("- " + res.getKey() + ": " + res.getValue().getMessage(1, false).getString());
+                    Utility.sendMessage(Text.empty().append("- ").append(res.getKey().toString()).append(": ").append(res.getValue().getMessage(1,false)));
                 }
                 return 0;
             }
@@ -447,7 +448,7 @@ public class Commands {
 
 //        dispatcher.register(literal("swapininv").executes(context -> {
 //            if(CodeClient.location instanceof Dev) {
-//                PlaceTemplates action = Utility.createSwapper(Utility.templatesInInventory(), () -> {
+//                PlaceTemplates action = PlaceTemplates.createSwapper(Utility.templatesInInventory(), () -> {
 //                    CodeClient.currentAction = new None();
 //                    Utility.sendMessage("Done!", ChatType.SUCCESS);
 //                });
@@ -460,7 +461,7 @@ public class Commands {
 //        }));
         dispatcher.register(literal("templateplacer").executes(context -> {
             if (CodeClient.location instanceof Dev) {
-                var action = Utility.createPlacer(Utility.templatesInInventory(), Commands::actionCallback);
+                var action = PlaceTemplates.createPlacer(Utility.templatesInInventory(), Commands::actionCallback);
                 if (action == null) return -1;
                 CodeClient.currentAction = action;
                 CodeClient.currentAction.init();
@@ -552,7 +553,7 @@ public class Commands {
                 for (var template : Objects.requireNonNull(getAllTemplates(path))) {
                     map.add(Utility.makeTemplate(template));
                 }
-                confirm = Utility.createSwapper(map, Commands::actionCallback).swap();
+                confirm = PlaceTemplates.createSwapper(map, Commands::actionCallback).swap();
                 Utility.sendMessage(Text.translatable("codeclient.action.confirmcc.use"), ChatType.INFO);
             } catch (IOException e) {
                 Utility.sendMessage(Text.translatable("codeclient.files.error.read_file", path), ChatType.FAIL);
